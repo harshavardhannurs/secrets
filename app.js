@@ -37,6 +37,18 @@
 //We are going to incorporate hashing, salting and authentication using passport.
 
 //Level-6 Third party OAuth
+//Open Authorization: Open standard for token based authorization. Delegating the process of authentication to a well-known company(FB, Google, Twitter, etc).
+//Features 1.Granular access levels: The app developer can determine the kind of data they needed from user's account.
+//2. Read/Write access: If we take example of Facebook, we can just access their profile pic, or friends or also ask for write access.(Suppose we wanted to post something to facebook from our app)
+//3. Revoke Access: If the user is authenticating using facebook, then he/she must be able to remove/revoke/deauthorize access granted to our app from facebook.
+//Process of OAuth
+//1.To tell the third party about our web app. We have to set up our app in their developer console and return we get an AppID or ClientID
+//2.Redirect to authenticate
+//3.User logs in actual third party site
+//4.User reviews the permissions and grants them
+//5.Our website recieves an "Auth code" from that third party.This allows us to check if the user is successfully signed in to facebook.
+//6.We can also exchange our Auth code to get "Access token", which we save in our DB because this token is used to make subsequent requests for information from that third party
+//Basically auth code is like a ticket-one time use while access token is like membership which lasts for a long period of time but also has some perks.
 
 require('dotenv').config();//should require dotenv at the very start
 const express = require('express')
@@ -52,7 +64,9 @@ const session = require('express-session')  //require this first
 const passport = require('passport') //We no more need bcrypt if we are using passport
 const passportLocalMongoose= require('passport-local-mongoose')
 //Note that we have installed passport-local package too
-
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const FacebookStrategy = require('passport-facebook')
+const findOrCreate = require('mongoose-findorcreate')
 
 app.set('view engine', 'ejs')
 app.use(express.static("public"))
@@ -73,11 +87,13 @@ mongoose.connect("mongodb://localhost:27017/userDB", {useNewUrlParser:true})
 
 const userSchema = new mongoose.Schema({
   email:String,
-  password:String
+  password:String,
+  googleId:String,
+  facebookId:String
 })
 
 userSchema.plugin(passportLocalMongoose)//Used to hash and salt the password and save our users into MongoDB database
-
+userSchema.plugin(findOrCreate);
 //console.log(process.env.SECRET);Accessing environment variables
 //secret is in .env
 //The way we add environment variables in .env is in the form, NAME=VALUE or NAME_XYZ=VALUE
@@ -89,15 +105,76 @@ userSchema.plugin(passportLocalMongoose)//Used to hash and salt the password and
 const User = mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());//create local login strategy
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+// passport.serializeUser(User.serializeUser()); //comes from package-local-mongoose
+// passport.deserializeUser(User.deserializeUser());//This serialize and deserialize only works for local strategy
+passport.serializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, {
+      id: user.id,
+      username: user.username,
+      picture: user.picture
+    });
+  });
+});
+//This serialize and deserialize works for both local and google strategy
 //Serialize and deserialize is only necessary when we are using sessions.
 //Serialize creates a cookie and stuffs messages like user identification into that cookie
 //Deserialize allows the passport to discover messages in that cookie.
+passport.deserializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, user);
+  });
+});
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL:'https://www.googleapis.com/oauth2/v3/userinfo'
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    console.log(profile);
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+
+passport.use(new FacebookStrategy({
+  clientID:process.env.FB_CLIENT_ID,
+  clientSecret:process.env.FB_CLIENT_SECRET,
+  callbackURL:"http://localhost:3000/auth/facebook/secrets"
+},
+function(accessToken, refreshToken, profile, cb){
+  console.log(profile);
+  User.findOrCreate({facebookId:profile.id}, function(err, user){
+    return cb(err, user)
+  })
+}
+))
+
 
 app.get("/", (req, res)=>{
   res.render("home")
 })
+
+app.get('/auth/google',
+  passport.authenticate('google', { scope: ['profile'] }));
+
+app.get('/auth/google/secrets',
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  function(req, res) {
+    res.redirect('/secrets');
+  });
+
+  app.get('/auth/facebook',
+    passport.authenticate('facebook'));
+
+app.get('/auth/facebook/secrets',
+  passport.authenticate('facebook', { failureRedirect: '/login' }),
+  function(req, res) {
+    res.redirect('/secrets');
+  });
 
 app.get("/login", (req, res)=>{
   res.render("login")
