@@ -89,7 +89,8 @@ const userSchema = new mongoose.Schema({
   email:String,
   password:String,
   googleId:String,
-  facebookId:String
+  facebookId:String,
+  secret:String
 })
 
 userSchema.plugin(passportLocalMongoose)//Used to hash and salt the password and save our users into MongoDB database
@@ -107,35 +108,37 @@ const User = mongoose.model("User", userSchema);
 passport.use(User.createStrategy());//create local login strategy
 // passport.serializeUser(User.serializeUser()); //comes from package-local-mongoose
 // passport.deserializeUser(User.deserializeUser());//This serialize and deserialize only works for local strategy
-passport.serializeUser(function(user, cb) {
+
+passport.serializeUser(function(user, done){
   process.nextTick(function() {
-    return cb(null, {
+    return done(null, {
       id: user.id,
       username: user.username,
       picture: user.picture
     });
   });
 });
+
+passport.deserializeUser(function(user, done) {
+  process.nextTick(function() {
+    return done(null, user);
+  });
+});
+
 //This serialize and deserialize works for both local and google strategy
 //Serialize and deserialize is only necessary when we are using sessions.
 //Serialize creates a cookie and stuffs messages like user identification into that cookie
 //Deserialize allows the passport to discover messages in that cookie.
-passport.deserializeUser(function(user, cb) {
-  process.nextTick(function() {
-    return cb(null, user);
-  });
-});
 
 passport.use(new GoogleStrategy({
     clientID: process.env.CLIENT_ID,
     clientSecret: process.env.CLIENT_SECRET,
     callbackURL: "http://localhost:3000/auth/google/secrets",
-    userProfileURL:'https://www.googleapis.com/oauth2/v3/userinfo'
   },
-  function(accessToken, refreshToken, profile, cb) {
+  function(accessToken, refreshToken, profile, done) {
     console.log(profile);
     User.findOrCreate({ googleId: profile.id }, function (err, user) {
-      return cb(err, user);
+      return done(err, user);
     });
   }
 ));
@@ -145,14 +148,13 @@ passport.use(new FacebookStrategy({
   clientSecret:process.env.FB_CLIENT_SECRET,
   callbackURL:"http://localhost:3000/auth/facebook/secrets"
 },
-function(accessToken, refreshToken, profile, cb){
+function(accessToken, refreshToken, profile, done){
   console.log(profile);
   User.findOrCreate({facebookId:profile.id}, function(err, user){
-    return cb(err, user)
+    return done(err, user)
   })
 }
 ))
-
 
 app.get("/", (req, res)=>{
   res.render("home")
@@ -167,8 +169,8 @@ app.get('/auth/google/secrets',
     res.redirect('/secrets');
   });
 
-  app.get('/auth/facebook',
-    passport.authenticate('facebook'));
+app.get('/auth/facebook',
+  passport.authenticate('facebook'));
 
 app.get('/auth/facebook/secrets',
   passport.authenticate('facebook', { failureRedirect: '/login' }),
@@ -184,12 +186,14 @@ app.get("/register", (req, res)=>{
   res.render("register")
 })
 
-app.get("/secrets", (req, res)=>{ //if the user is authenticated, then he/she can directly go to secrets route
-  if(req.isAuthenticated()){
-    res.render("secrets")
-  }else{
-    res.redirect("/login")
-  }
+app.get("/secrets", (req, res)=>{ //The user not not be logged in(i.e., authenticated) to look at other submissions. If he need to post one then he might need to login
+  User.find({"secret":{$ne:null}}, (err, foundSecrets)=>{
+    if(!err){
+      if(foundSecrets.length>0){
+        res.render("secrets", {secrets:foundSecrets})
+      }
+    }
+  });
 })
 
 app.get("/logout", (req, res)=>{
@@ -197,6 +201,14 @@ app.get("/logout", (req, res)=>{
     if(!err){res.redirect("/")}else{console.log(err);}
   })
 });
+
+app.get("/submit", (req, res)=>{
+  if(req.isAuthenticated()){
+    res.render("submit");
+  }else{
+    res.redirect("login");
+  }
+})
 
 app.post("/register", (req, res)=>{
   // bcrypt.hash(req.body.password, saltRounds, function(err, hash) {
@@ -253,6 +265,21 @@ app.post("/login", (req, res)=>{
     }
   })
 });
+
+app.post("/submit", (req, res)=>{
+  const secretSubmitted = req.body.secret;
+  console.log(req.user);//passport saves the user's details in req when a new login session is initiated
+  User.findById(req.user.id, (err, user)=>{
+    if(!err){
+      if(user){
+        user.secret = secretSubmitted;
+        user.save(()=>{
+          res.redirect("/secrets")
+        })
+      }
+    }else{console.log(err);}
+  });
+})
 
 //Now note that though hashes are quiet secure, hashes are till hackable
 //Suppose a user has kept a word in dictionary as password. We have around 150,000 words in a dictionary and he only has to hash those many words to find the password(dictionary attack)
